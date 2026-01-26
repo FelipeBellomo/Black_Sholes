@@ -196,7 +196,6 @@ export default function FormPage() {
         );
       }
 
-      // Mantem lista na UI com o resultado encontrado
       setSearchResults(
         matches.map((item) => toSearchItem(item, normalizedSymbol)),
       );
@@ -392,8 +391,17 @@ export default function FormPage() {
             if (!Number.isFinite(index)) return;
             const item = displayedResults[index];
             if (!item) return;
-            setPinnedResults(displayedResults);
+
+            // Aplica os dados ao formulário
             applySearchItemToForm(item);
+
+            // Escreve o ticker do ativo na caixa de busca
+            setSearchTerm(item.symbol);
+
+            // Limpa os resultados para fechar a aba de sugestões
+            setSearchResults([]);
+            setPinnedResults(null);
+            setSelectedResultIndex('');
           }}
         >
           <option value="" disabled>
@@ -549,15 +557,15 @@ function parseInputs(
   { requireP }: { requireP: boolean },
 ):
   | {
-      ok: true;
-      S: number;
-      K: number;
-      r: number;
-      sigma: number;
-      p?: number;
-      dataAtual: Date;
-      dataVencimento: Date;
-    }
+    ok: true;
+    S: number;
+    K: number;
+    r: number;
+    sigma: number;
+    p?: number;
+    dataAtual: Date;
+    dataVencimento: Date;
+  }
   | { ok: false; error: string } {
   const S = Number(form.S);
   const K = Number(form.K);
