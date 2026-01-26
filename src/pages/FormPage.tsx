@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   blackScholesCall,
@@ -11,7 +11,7 @@ import {
 } from '../utils/blackScholes';
 import { styles } from '../styles';
 import { parseDate, formatDateInput } from '../utils/dateHelpers';
-import { searchQuotes, type SearchItem } from '../api/search';
+import { type SearchItem } from '../api/search';
 
 type FormState = {
   S: string;
@@ -26,6 +26,104 @@ type FormState = {
 const today = new Date();
 const defaultVencimento = new Date();
 defaultVencimento.setDate(today.getDate() + 90);
+
+const MARKET_DATA_URL =
+  'https://raw.githubusercontent.com/iagomarcolino/Consultprice/main/data/marketdata.json';
+const AUTOCOMPLETE_MIN_CHARS = 2;
+const AUTOCOMPLETE_DEBOUNCE_MS = 350;
+const MARKET_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function normalizeTicker(raw: string): string {
+  const ticker = raw.trim().toUpperCase();
+  if (!ticker) return '';
+  return ticker.includes('.') ? ticker : `${ticker}.SA`;
+}
+
+function normalizeText(raw: string): string {
+  return raw
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+type MarketDataItem = {
+  symbol?: string;
+  name?: string;
+  price?: number;
+  vol_annual?: number;
+};
+
+const marketDataCache: {
+  data: MarketDataItem[] | null;
+  fetchedAt: number;
+} = {
+  data: null,
+  fetchedAt: 0,
+};
+
+async function loadMarketData(
+  signal?: AbortSignal,
+): Promise<MarketDataItem[]> {
+  if (
+    marketDataCache.data &&
+    Date.now() - marketDataCache.fetchedAt < MARKET_CACHE_TTL_MS
+  ) {
+    return marketDataCache.data;
+  }
+
+  const resp = await fetch(`${MARKET_DATA_URL}?t=${Date.now()}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!resp.ok) {
+    throw new Error('HTTP error');
+  }
+
+  const json = await resp.json();
+  const data = Array.isArray(json?.data) ? json.data : [];
+  marketDataCache.data = data;
+  marketDataCache.fetchedAt = Date.now();
+  return data;
+}
+
+function getMatches(
+  data: MarketDataItem[],
+  rawTerm: string,
+): MarketDataItem[] {
+  const term = rawTerm.trim();
+  if (!term) return [];
+
+  const exactSymbol = normalizeTicker(term);
+  const partialSymbol = term.toUpperCase();
+  const normalizedName = normalizeText(term);
+
+  return data.filter((item) => {
+    const symbol =
+      typeof item?.symbol === 'string' ? item.symbol.toUpperCase() : '';
+    const name = typeof item?.name === 'string' ? item.name : '';
+    const symbolExactMatch = symbol !== '' && symbol === exactSymbol;
+    const symbolPartialMatch =
+      partialSymbol.length >= 2 && symbol.includes(partialSymbol);
+    const nameMatch =
+      normalizedName.length >= 2 &&
+      normalizeText(name).includes(normalizedName);
+    return symbolExactMatch || symbolPartialMatch || nameMatch;
+  });
+}
+
+function toSearchItem(
+  item: MarketDataItem,
+  fallbackSymbol: string,
+): SearchItem {
+  const symbol = item.symbol ?? fallbackSymbol;
+  return {
+    symbol,
+    name: item.name ?? symbol,
+    exchange: 'Dados GitHub',
+    price: item.price,
+    volAnnual: item.vol_annual,
+  };
+}
 
 const initialState: FormState = {
   S: '100',
@@ -42,31 +140,130 @@ export default function FormPage() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [pinnedResults, setPinnedResults] = useState<SearchItem[] | null>(null);
+  const [selectedResultIndex, setSelectedResultIndex] = useState('');
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const navigate = useNavigate();
+  const autocompleteController = useRef<AbortController | null>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const displayedResults = pinnedResults ?? searchResults;
+
+  const applySearchItemToForm = (item: SearchItem) => {
+    setForm((prev) => ({
+      ...prev,
+      ...(item.price !== undefined ? { S: String(item.price) } : {}),
+      ...(item.volAnnual !== undefined
+        ? { sigma: String(item.volAnnual) }
+        : {}),
+    }));
+  };
 
   const handleSearch = async () => {
-    if (!searchTerm.trim()) {
-      setSearchMessage('Informe um termo para pesquisar.');
+    const rawTerm = searchTerm.trim();
+    const normalizedSymbol = normalizeTicker(rawTerm);
+    if (!rawTerm) {
+      setSearchMessage('Informe um ticker ou nome.');
       setSearchResults([]);
+      setPinnedResults(null);
+      setSelectedResultIndex('');
       return;
     }
     setSearchLoading(true);
     setSearchMessage(null);
     setSearchResults([]);
+    setPinnedResults(null);
+    setSelectedResultIndex('');
     try {
-      const results = await searchQuotes(searchTerm, 5);
-      setSearchResults(results);
-      if (results.length === 0) {
-        setSearchMessage('Nenhum ativo encontrado.');
+      const data = await loadMarketData();
+      const matches = getMatches(data, rawTerm);
+
+      if (matches.length === 0) {
+        setSearchMessage('Ativo nao encontrado.');
+        return;
       }
+
+      const exactSymbolMatch = matches.find((item) => {
+        if (typeof item?.symbol !== 'string') return false;
+        return item.symbol.toUpperCase() === normalizedSymbol;
+      });
+      const preferredMatch =
+        exactSymbolMatch ?? (matches.length === 1 ? matches[0] : null);
+
+      if (preferredMatch) {
+        applySearchItemToForm(
+          toSearchItem(preferredMatch, normalizedSymbol),
+        );
+      }
+
+      // Mantem lista na UI com o resultado encontrado
+      setSearchResults(
+        matches.map((item) => toSearchItem(item, normalizedSymbol)),
+      );
     } catch (err) {
-      setSearchMessage('Erro ao buscar ativos.');
+      setSearchMessage('Erro ao consultar dados.');
     } finally {
       setSearchLoading(false);
     }
   };
+
+  useEffect(() => {
+    const term = searchTerm.trim();
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    if (!term || term.length < AUTOCOMPLETE_MIN_CHARS) {
+      if (autocompleteController.current) {
+        autocompleteController.current.abort();
+      }
+      setSearchLoading(false);
+      setSearchResults([]);
+      setSelectedResultIndex('');
+      setSearchMessage(null);
+      return;
+    }
+
+    debounceTimer.current = setTimeout(() => {
+      if (autocompleteController.current) {
+        autocompleteController.current.abort();
+      }
+      const controller = new AbortController();
+      autocompleteController.current = controller;
+
+      setSearchLoading(true);
+      setSearchMessage(null);
+      loadMarketData(controller.signal)
+        .then((data) => {
+          const matches = getMatches(data, term);
+          setSearchResults(
+            matches.map((item) => toSearchItem(item, normalizeTicker(term))),
+          );
+          if (matches.length === 0) {
+            setSearchMessage('Nenhum resultado.');
+          }
+        })
+        .catch((err) => {
+          if ((err as Error).name === 'AbortError') return;
+          setSearchMessage('Erro ao consultar dados.');
+        })
+        .finally(() => {
+          setSearchLoading(false);
+        });
+    }, AUTOCOMPLETE_DEBOUNCE_MS);
+  }, [searchTerm]);
+
+  useEffect(
+    () => () => {
+      if (autocompleteController.current) {
+        autocompleteController.current.abort();
+      }
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    },
+    [],
+  );
 
   const handleChange = (key: keyof FormState, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -164,8 +361,12 @@ export default function FormPage() {
         <input
           style={{ ...styles.input, ...styles.searchInput, marginTop: 0 }}
           value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="Buscar ativo (ex: PETR4.SA, AAPL)"
+          onChange={(e) => {
+            setPinnedResults(null);
+            setSelectedResultIndex('');
+            setSearchTerm(e.target.value);
+          }}
+          placeholder="Buscar ativo (ticker ou nome, ex: PETR4.SA, Ambev)"
         />
         <button
           style={{ ...styles.secondaryButton, marginTop: 0 }}
@@ -178,74 +379,78 @@ export default function FormPage() {
       </div>
 
       {searchMessage ? <p style={styles.error}>{searchMessage}</p> : null}
-      {searchResults.length > 0 ? (
-        <ul style={styles.searchList}>
-          {searchResults.map((item) => (
-            <li
+      {displayedResults.length > 0 ? (
+        <select
+          style={{ ...styles.input, ...styles.searchInput, marginTop: 0 }}
+          size={Math.min(6, displayedResults.length + 1)}
+          value={selectedResultIndex}
+          onChange={(e) => {
+            const value = e.target.value;
+            setSelectedResultIndex(value);
+            if (value === '') return;
+            const index = Number(value);
+            if (!Number.isFinite(index)) return;
+            const item = displayedResults[index];
+            if (!item) return;
+            setPinnedResults(displayedResults);
+            applySearchItemToForm(item);
+          }}
+        >
+          <option value="" disabled>
+            Selecione um ativo
+          </option>
+          {displayedResults.map((item, index) => (
+            <option
               key={`${item.symbol}-${item.exchange}`}
-              style={styles.searchItem}
-              onClick={() => {
-                if (item.price) {
-                  setForm((prev) => ({ ...prev, S: String(item.price) }));
-                }
-              }}
+              value={String(index)}
             >
-              <div>
-                <div style={styles.rowValue}>{item.symbol}</div>
-                <div style={styles.searchMeta}>{item.name}</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                {item.price !== undefined ? (
-                  <div style={styles.rowValue}>{item.price}</div>
-                ) : null}
-                {item.exchange ? (
-                  <span style={styles.searchMeta}>{item.exchange}</span>
-                ) : null}
-              </div>
-            </li>
+              {item.symbol} - {item.name}
+              {item.price !== undefined ? ` (R$ ${item.price})` : ''}
+            </option>
           ))}
-        </ul>
+        </select>
       ) : null}
 
       <form style={styles.form} onSubmit={handleSubmit}>
         <Input
           label="S - Preco do ativo"
+          hint="Preco atual do ativo subjacente (spot)."
           value={form.S}
           onChange={(e) => handleChange('S', e.target.value)}
           inputMode="decimal"
         />
         <Input
           label="K - Preco de exercicio"
+          hint="Strike: preco de exercicio no vencimento."
           value={form.K}
           onChange={(e) => handleChange('K', e.target.value)}
           inputMode="decimal"
         />
         <Input
-          label="r - Taxa livre de risco (anual, ex: 0.05)"
+          label="r - Taxa livre de risco (anual)"
+          hint="Taxa livre de risco anual em decimal Selic(0.05 = 5%)."
           value={form.r}
           onChange={(e) => handleChange('r', e.target.value)}
           inputMode="decimal"
         />
         <Input
-          label="sigma - Volatilidade anual (ex: 0.2)"
+          label="sigma - Volatilidade anual"
+          hint="Volatilidade anual do ativo em decimal (0.2 = 20%)."
           value={form.sigma}
           onChange={(e) => handleChange('sigma', e.target.value)}
           inputMode="decimal"
         />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          <span style={styles.label}>
-            p - Parametro (use apenas no modificado, sugestao: 0.5 a 1.5)
-          </span>
-          <input
-            style={styles.input}
-            value={form.p}
-            onChange={(e) => handleChange('p', e.target.value)}
-            inputMode="decimal"
-            placeholder="1.0"
-          />
-        </div>
+        <Input
+          label="p - Parametro (modelo modificado)"
+          hint="Parametro do Black-Scholes modificado; use apenas no modificado (sugestao: 0.5 a 1.5)."
+          value={form.p}
+          onChange={(e) => handleChange('p', e.target.value)}
+          inputMode="decimal"
+          placeholder="1.0"
+        />
         <Input
           label="Data atual (DD/MM/AAAA)"
+          hint="Data base para calcular o tempo ate o vencimento."
           value={form.dataAtual}
           onChange={(e) => handleChange('dataAtual', e.target.value)}
           inputMode="text"
@@ -253,6 +458,7 @@ export default function FormPage() {
         />
         <Input
           label="Data de vencimento (DD/MM/AAAA)"
+          hint="Data de expiracao da opcao."
           value={form.dataVencimento}
           onChange={(e) => handleChange('dataVencimento', e.target.value)}
           inputMode="text"
@@ -284,9 +490,11 @@ export default function FormPage() {
 
 function Input({
   label,
+  hint,
   ...props
 }: {
   label: string;
+  hint?: string;
   value: string;
   inputMode?: 'decimal' | 'text';
   placeholder?: string;
@@ -294,9 +502,45 @@ function Input({
 }) {
   return (
     <label style={styles.inputGroup}>
-      <span style={styles.label}>{label}</span>
+      <span style={styles.labelRow}>
+        <span style={styles.label}>{label}</span>
+        {hint ? <InfoTip text={hint} /> : null}
+      </span>
       <input style={styles.input} {...props} />
     </label>
+  );
+}
+
+function InfoTip({ text }: { text: string }) {
+  const [isPinned, setIsPinned] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const isOpen = isPinned || isHovered;
+
+  return (
+    <span
+      style={styles.hintWrapper}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <button
+        type="button"
+        style={styles.hintIcon}
+        aria-label={`Ajuda: ${text}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setIsPinned((prev) => !prev);
+        }}
+        onBlur={() => setIsPinned(false)}
+      >
+        ?
+      </button>
+      {isOpen ? (
+        <span style={styles.hintBubble} role="tooltip">
+          {text}
+        </span>
+      ) : null}
+    </span>
   );
 }
 

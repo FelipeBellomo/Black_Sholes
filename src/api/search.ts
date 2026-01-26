@@ -4,6 +4,7 @@ export type SearchItem = {
   exchange: string;
   price?: number;
   currency?: string;
+  volAnnual?: number;
 };
 
 const QUOTE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=';
