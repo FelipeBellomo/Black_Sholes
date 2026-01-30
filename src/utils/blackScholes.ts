@@ -18,17 +18,11 @@ function erf(x: number): number {
   const y =
     1 -
     (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t) *
-      Math.exp(-absX * absX);
+    Math.exp(-absX * absX);
 
   return sign * y;
 }
 
-/**
- * CDF da normal padrao N(x) usando erf (precisao ~1e-7).
- */
-export function normalCdf(x: number): number {
-  return 0.5 * (1 + erf(x / Math.SQRT2));
-}
 
 // Alias semantico para aderir a notacao N(x).
 export const N = normalCdf;
@@ -36,7 +30,7 @@ export const N = normalCdf;
 /**
  * Conta dias uteis (segunda a sexta) entre duas datas.
  * Datas sao normalizadas para meia-noite para evitar problemas de fuso horario.
- */
+*/
 export function calcularDiasUteis(dataAtual: Date, dataVencimento: Date): number {
   const inicio = new Date(
     Date.UTC(
@@ -73,7 +67,7 @@ export function calcularDiasUteis(dataAtual: Date, dataVencimento: Date): number
 
 /**
  * Converte diferenca de datas em anos usando 252 dias uteis.
- */
+*/
 export function calcularTempoEmAnos(
   dataAtual: Date,
   dataVencimento: Date,
@@ -84,6 +78,63 @@ export function calcularTempoEmAnos(
 
 function ensurePositive(value: number, fallback = 1e-12): number {
   return value > 0 ? value : fallback;
+}
+
+
+/**
+ * CDF da normal padrao N(x) usando erf (precisao ~1e-7).
+ */
+export function normalCdf(x: number): number {
+  return 0.5 * (1 + erf(x / Math.SQRT2));
+}
+
+export function normalPdf(x: number): number {
+  return (1.0 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
+}
+
+// Cria objeto para exportar todas juntas
+
+interface ResultadoGregas {
+  deltaCall: number;
+  deltaPut: number;
+  vega: number;
+  gama: number;
+
+}
+
+// calcula as 3 gregas (Delta, Vega, Gama)
+export function calculaGregas(
+  S: number,
+  K: number,
+  r: number,
+  sigma: number,
+  dataAtual: Date,
+  dataVencimento: Date,
+): ResultadoGregas {
+
+  const T = calcularTempoEmAnos(dataAtual, dataVencimento);
+
+  const safeSigma = ensurePositive(sigma);
+  const sqrtT = Math.sqrt(T);
+  const d1 =
+    (Math.log(S / K) + (r + 0.5 * safeSigma * safeSigma) * T) /
+    (safeSigma * sqrtT);
+
+  const phid1 = normalPdf(d1);
+  const deltaCall = normalCdf(d1);
+  const deltaPut = deltaCall - 1;
+
+  const vega = S * phid1 * sqrtT;
+  const gama = phid1 / (S * safeSigma * sqrtT);
+
+  return {
+    deltaCall,
+    deltaPut,
+    vega: vega / 100,
+    gama,
+  };
+
+
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   blackScholesPutModified,
   calcularDiasUteis,
   calcularTempoEmAnos,
+  calculaGregas,
 } from '../utils/blackScholes';
 import { styles } from '../styles';
 import { parseDate, formatDateInput } from '../utils/dateHelpers';
@@ -286,6 +287,7 @@ export default function FormPage() {
     const T = calcularTempoEmAnos(dataAtual, dataVencimento);
     const call = blackScholesCall(S, K, r, sigma, dataAtual, dataVencimento);
     const put = blackScholesPut(S, K, r, sigma, dataAtual, dataVencimento);
+    const gregas = calculaGregas(S, K, r, sigma, dataAtual, dataVencimento);
 
     navigate('/resultado', {
       state: {
@@ -295,6 +297,7 @@ export default function FormPage() {
           put,
           T,
           diasUteis,
+          ...gregas,
           inputs: form,
         },
       },

@@ -8,6 +8,11 @@ type ResultState = {
     put: number;
     T: number;
     diasUteis: number;
+    deltaCall: number;
+    deltaPut: number;
+    vega: number;
+    gama: number;
+
     inputs: {
       S: string;
       K: string;
@@ -71,6 +76,10 @@ export default function ResultPage({ variant }: Props) {
           <p style={styles.sectionText}>K: {result.inputs.K}</p>
           <p style={styles.sectionText}>r: {result.inputs.r}</p>
           <p style={styles.sectionText}>sigma: {result.inputs.sigma}</p>
+          <p style={styles.sectionText}>delta Call: {result.deltaCall}</p>
+          <p style={styles.sectionText}>delta Put: {result.deltaPut}</p>
+          <p style={styles.sectionText}>vega: {result.vega}</p>
+          <p style={styles.sectionText}>gama: {result.gama}</p>
           <p style={styles.sectionText}>
             Data atual: {result.inputs.dataAtual}
           </p>
